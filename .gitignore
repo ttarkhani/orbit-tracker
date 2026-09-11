@@ -1,0 +1,12 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Project-generated
+tle_cache.json
+
+# OS / editor
+.DS_Store
+.vscode/

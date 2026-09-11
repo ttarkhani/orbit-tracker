@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Orbit Tracker</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000011; font-family: sans-serif; }
+    #globeViz { width: 100vw; height: 100vh; }
+
+    #controls {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      width: 260px;
+      background: rgba(0, 0, 20, 0.75);
+      color: white;
+      padding: 14px;
+      border-radius: 8px;
+      z-index: 10;
+    }
+    #controls h3 { margin: 0 0 10px 0; font-size: 15px; }
+    #controls label { display: block; font-size: 12px; margin-bottom: 6px; }
+    #controls input {
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 2px;
+      padding: 4px;
+      border-radius: 4px;
+      border: none;
+    }
+    #controls button {
+      width: 100%;
+      margin-top: 8px;
+      padding: 6px;
+      border-radius: 4px;
+      border: none;
+      background: orange;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    #passResults {
+      margin-top: 12px;
+      max-height: 300px;
+      overflow-y: auto;
+      font-size: 12px;
+    }
+    .pass { padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.15); }
+  </style>
+</head>
+<body>
+  <div id="globeViz"></div>
+
+  <div id="controls">
+    <h3>🛰 Orbit Tracker</h3>
+    <label>Latitude <input type="number" id="lat" value="40.7128" step="0.0001"></label>
+    <label>Longitude <input type="number" id="lon" value="-74.0060" step="0.0001"></label>
+    <button id="findPasses">Find Upcoming Passes</button>
+    <div id="passResults"></div>
+  </div>
+
+  <script src="https://unpkg.com/globe.gl"></script>
+  <script src="app.js"></script>
+</body>
+</html>
