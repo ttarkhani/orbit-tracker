@@ -1,8 +1,13 @@
 """
 tle_data.py
 
-Fetches, validates, and caches Two-Line Element (TLE) orbital data for a
-curated set of well-known satellites from CelesTrak's public GP data API.
+Fetches, validates, and caches Two-Line Element (TLE) orbital data from
+CelesTrak's public GP data API:
+  - A curated set of individually well-known satellites (ISS, Hubble, etc.),
+    fetched by NORAD catalog number.
+  - A bulk-fetched set of additional satellites from CelesTrak's 'visual'
+    group (bright, easily observed objects), fetched in a single request
+    rather than one request per satellite.
 """
 
 import json
@@ -32,10 +37,12 @@ class TLEManager:
     """Fetches and caches satellite TLE data from CelesTrak."""
 
     CACHE_FILE = "tle_cache.json"
-    CACHE_DURATION_HOURS = 24                         
-    REQUEST_TIMEOUT_SECONDS = 10
+    CACHE_DURATION_HOURS = 24
+    REQUEST_TIMEOUT_SECONDS = 15  # bulk group payload is larger than a single-satellite request
     GP_URL = "https://celestrak.org/NORAD/elements/gp.php"
 
+    # Individually curated, hand-verified satellites with custom info blurbs
+    # in the frontend.
     SATELLITES: dict[str, str] = {
         "25544": "ISS",
         "20580": "HUBBLE",
@@ -44,13 +51,17 @@ class TLEManager:
         "41866": "GOES-16",
     }
 
+    # Additional satellites fetched in bulk from CelesTrak's 'visual' group
+    # (bright, naked-eye-visible objects) — one request instead of many.
+    BULK_GROUP = "visual"
+    BULK_TARGET_COUNT = 25  # + the 5 curated above = ~30 tracked satellites
+
     @staticmethod
     def _tle_checksum_valid(line: str) -> bool:
         """
         Validate a TLE line's checksum digit: sum of all digits mod 10
         (a '-' counts as 1; every other non-digit counts as 0) must equal
-        the line's final character. Catches truncated or corrupted data
-        before it silently feeds bad elements into SGP4.
+        the line's final character.
         """
         if not line:
             return False
@@ -64,13 +75,9 @@ class TLEManager:
         return total % 10 == int(expected)
 
     @classmethod
-    def fetch_from_celestrak(cls) -> dict[str, dict]:
-        """
-        Fetch each tracked satellite individually by NORAD catalog number.
-        One small request per satellite instead of downloading CelesTrak's
-        entire active catalog just to keep 5 of them.
-        """
-        logger.info(f"Fetching {len(cls.SATELLITES)} satellites from CelesTrak...")
+    def fetch_curated(cls) -> dict[str, dict]:
+        """Fetch each individually curated satellite by NORAD catalog number."""
+        logger.info(f"Fetching {len(cls.SATELLITES)} curated satellites from CelesTrak...")
         tle_dict: dict[str, dict] = {}
         failed: list[str] = []
 
@@ -90,9 +97,7 @@ class TLEManager:
                     continue
 
                 name, line1, line2 = lines[0].strip(), lines[1].strip(), lines[2].strip()
-                checksum_ok = cls._tle_checksum_valid(line1) and cls._tle_checksum_valid(line2)
-
-                if not checksum_ok:
+                if not (cls._tle_checksum_valid(line1) and cls._tle_checksum_valid(line2)):
                     logger.warning(f"{friendly_name} ({norad_id}): checksum FAILED, skipping")
                     failed.append(friendly_name)
                     continue
@@ -110,16 +115,88 @@ class TLEManager:
                 logger.error(f"{friendly_name} ({norad_id}): request failed — {e}")
                 failed.append(friendly_name)
 
-        summary = f"Fetched {len(tle_dict)}/{len(cls.SATELLITES)} satellites"
+        summary = f"Curated: {len(tle_dict)}/{len(cls.SATELLITES)} satellites"
         logger.info(summary if not failed else f"{summary} ({len(failed)} failed: {failed})")
         return tle_dict
+
+    @classmethod
+    def fetch_bulk_extras(cls, exclude_ids: set[str]) -> dict[str, dict]:
+        """
+        Fetch CelesTrak's 'visual' group in a single request, skipping any
+        satellite already covered by the curated set, capped at BULK_TARGET_COUNT.
+        """
+        logger.info(f"Fetching bulk group '{cls.BULK_GROUP}' from CelesTrak...")
+        try:
+            resp = requests.get(
+                cls.GP_URL,
+                params={"GROUP": cls.BULK_GROUP, "FORMAT": "TLE"},
+                timeout=cls.REQUEST_TIMEOUT_SECONDS,
+            )
+            resp.raise_for_status()
+            lines = [ln for ln in resp.text.strip().split("\n") if ln.strip()]
+        except requests.RequestException as e:
+            logger.error(f"Bulk group fetch failed: {e}")
+            return {}
+
+        extras: dict[str, dict] = {}
+        checksum_failures = 0
+
+        for i in range(0, len(lines) - 2, 3):
+            name, line1, line2 = lines[i].strip(), lines[i + 1].strip(), lines[i + 2].strip()
+            norad_id = line1[2:7].strip()
+
+            if norad_id in exclude_ids:
+                continue
+            if not (cls._tle_checksum_valid(line1) and cls._tle_checksum_valid(line2)):
+                checksum_failures += 1
+                continue
+
+            extras[name] = asdict(TLERecord(
+                name=name,
+                norad_id=norad_id,
+                line1=line1,
+                line2=line2,
+                fetched_at=datetime.now(timezone.utc).isoformat(),
+                checksum_valid=True,
+            ))
+
+            if len(extras) >= cls.BULK_TARGET_COUNT:
+                break
+
+        logger.info(
+            f"Bulk group '{cls.BULK_GROUP}': added {len(extras)} satellites"
+            + (f" ({checksum_failures} failed checksum)" if checksum_failures else "")
+        )
+        return extras
+
+    @classmethod
+    def fetch_from_celestrak(cls) -> dict[str, dict]:
+        """Fetch the curated set plus bulk extras for a fuller tracked list."""
+        curated = cls.fetch_curated()
+        extras = cls.fetch_bulk_extras(exclude_ids=set(cls.SATELLITES.keys()))
+        combined = {**curated, **extras}
+        logger.info(
+            f"Total satellites tracked: {len(combined)} "
+            f"({len(curated)} curated + {len(extras)} bulk)"
+        )
+        return combined
+
+    @classmethod
+    def get_cache_age_hours(cls) -> float | None:
+        """Return how many hours old the current TLE cache is, or None if no cache exists."""
+        cached = cls._read_cache()
+        if cached is None:
+            return None
+        fetched_time = datetime.fromisoformat(cached["timestamp"])
+        age = datetime.now(timezone.utc) - fetched_time
+        return round(age.total_seconds() / 3600, 2)
 
     @classmethod
     def load_or_fetch(cls, force_refresh: bool = False) -> dict[str, dict]:
         """
         Load from local cache if it's fresh; otherwise fetch live from
-        CelesTrak. If a live fetch fails outright, fall back to a stale
-        cache rather than returning nothing.
+        CelesTrak. Falls back to a stale cache rather than returning
+        nothing if a live fetch fails outright.
         """
         cached = cls._read_cache()
 

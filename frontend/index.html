@@ -44,7 +44,55 @@
       overflow-y: auto;
       font-size: 12px;
     }
-    .pass { padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.15); }
+    .pass { padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.15); cursor: pointer; }
+    .pass:hover { background: rgba(255,255,255,0.08); }
+
+    #satDetails {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      width: 260px;
+      background: rgba(0, 0, 20, 0.85);
+      color: white;
+      padding: 16px;
+      border-radius: 8px;
+      z-index: 10;
+      transform: translateX(120%);
+      transition: transform 0.25s ease;
+    }
+    #satDetails.open { transform: translateX(0); }
+    #closeDetails {
+      position: absolute;
+      top: 8px;
+      right: 10px;
+      background: none;
+      border: none;
+      color: white;
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    #satDetails h3 { margin: 4px 0 8px 0; }
+    #satDetails p { font-size: 12px; opacity: 0.85; margin: 0 0 10px 0; }
+    #satDetails .stat { font-size: 12px; margin-bottom: 4px; }
+
+    #statsBar {
+      position: fixed;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 20, 0.75);
+      color: white;
+      padding: 8px 18px;
+      border-radius: 20px;
+      font-size: 11px;
+      display: flex;
+      gap: 18px;
+      z-index: 10;
+      white-space: nowrap;
+    }
+    #statsBar span { opacity: 0.85; }
+    #statsBar b { opacity: 1; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -56,6 +104,25 @@
     <label>Longitude <input type="number" id="lon" value="-74.0060" step="0.0001"></label>
     <button id="findPasses">Find Upcoming Passes</button>
     <div id="passResults"></div>
+  </div>
+
+  <div id="satDetails">
+    <button id="closeDetails">&times;</button>
+    <h3 id="detailsName">—</h3>
+    <p id="detailsBlurb"></p>
+    <div class="stat">NORAD ID: <span id="detailsNorad">—</span></div>
+    <div class="stat">Latitude: <span id="detailsLat">—</span>°</div>
+    <div class="stat">Longitude: <span id="detailsLon">—</span>°</div>
+    <div class="stat">Altitude: <span id="detailsAlt">—</span> km</div>
+    <div class="stat">Updated: <span id="detailsUpdated">—</span></div>
+  </div>
+
+  <div id="statsBar">
+    <span>🛰 <b id="statSatCount">—</b> satellites tracked</span>
+    <span>TLE age: <b id="statTleAge">—</b>h</span>
+    <span>Position calc: <b id="statPosCalc">—</b>ms</span>
+    <span>Pass calc: <b id="statPassCalc">—</b>ms</span>
+    <span>Requests served: <b id="statRequests">—</b></span>
   </div>
 
   <script src="https://unpkg.com/globe.gl"></script>

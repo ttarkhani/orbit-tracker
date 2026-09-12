@@ -40,6 +40,7 @@ class SatelliteTracker:
 
         return {
             "name": sat_name,
+            "norad_id": self.tle_records[sat_name]["norad_id"],
             "latitude": round(subpoint.latitude.degrees, 4),
             "longitude": round(subpoint.longitude.degrees, 4),
             "altitude_km": round(subpoint.elevation.km, 2),
