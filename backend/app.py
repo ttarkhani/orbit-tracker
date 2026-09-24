@@ -1,7 +1,7 @@
 """
 app.py
 
-Flask backend exposing satellite position and pass-prediction endpoints.
+Flask backend exposing satellite position, pass-prediction, and orbit-path endpoints.
 """
 
 import logging
@@ -23,13 +23,14 @@ CORS(app)
 tracker = SatelliteTracker()
 predictor = PassPredictor(tracker)
 
-# In-memory, process-lifetime stats — resets on server restart.
-# Fine for a local demo; not meant to persist.
 app_stats = {
     "requests_served": 0,
     "last_position_calc_ms": None,
     "last_pass_calc_ms": None,
 }
+
+_orbit_path_cache: dict[str, dict] = {}
+ORBIT_PATH_CACHE_HOURS = 1
 
 
 @app.route("/api/satellites", methods=["GET"])
@@ -63,6 +64,37 @@ def get_passes():
     app_stats["requests_served"] += 1
 
     return jsonify({"count": len(passes), "location": {"lat": lat, "lon": lon}, "passes": passes})
+
+
+@app.route("/api/orbit-path", methods=["GET"])
+def get_orbit_path():
+    """
+    Full orbit path (one period) for a single satellite, given as a
+    ?name= query parameter — not a URL path segment, since many satellite
+    names contain slashes (e.g. rocket-body designations like 'SL-14 R/B').
+    """
+    satellite_name = request.args.get("name")
+    if not satellite_name or satellite_name not in tracker.satellites:
+        return jsonify({"error": "Unknown or missing satellite name"}), 404
+
+    cached = _orbit_path_cache.get(satellite_name)
+    now = time.time()
+
+    if cached is None or (now - cached["computed_at"]) > ORBIT_PATH_CACHE_HOURS * 3600:
+        start = time.time()
+        result = tracker.get_orbit_path(satellite_name)
+        result["computed_at"] = now
+        _orbit_path_cache[satellite_name] = result
+        logger.info(f"Computed orbit path for {satellite_name} in {(time.time() - start) * 1000:.1f}ms")
+    else:
+        result = cached
+
+    return jsonify({
+        "satellite": satellite_name,
+        "points": result["points"],
+        "is_geostationary": result["is_geostationary"],
+        "period_minutes": result["period_minutes"],
+    })
 
 
 @app.route("/api/stats", methods=["GET"])

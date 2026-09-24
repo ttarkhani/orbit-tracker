@@ -1,0 +1,99 @@
+:root {
+  --bg-base: #0A0E14;
+  --bg-panel: #131922;
+  --border: #232B38;
+  --accent: #FFB454;
+  --text-primary: #E8EAED;
+  --text-muted: #626C7A;
+  --font: 'JetBrains Mono', monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg-base);
+  font-family: var(--font);
+  color: var(--text-primary);
+}
+
+#globeViz { width: 100vw; height: 100vh; }
+
+#topBar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-base);
+  z-index: 20;
+}
+#topBar .brand { font-weight: 600; font-size: 13px; letter-spacing: 0.02em; }
+#topBar .clock { font-size: 13px; color: var(--accent); }
+
+.panel {
+  position: fixed;
+  width: 260px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  padding: 16px;
+  z-index: 10;
+}
+
+#controls { top: 60px; left: 16px; }
+#controls h3 { margin: 0 0 14px 0; font-size: 11px; font-weight: 600; color: var(--text-muted); }
+#controls label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 12px; }
+#controls input {
+  display: block; width: 100%; margin-top: 5px; padding: 7px 8px;
+  border: 1px solid var(--border); background: var(--bg-base);
+  color: var(--text-primary); font-family: var(--font); font-size: 13px;
+}
+#controls input:focus-visible { outline: 1px solid var(--accent); border-color: var(--accent); }
+#controls button {
+  width: 100%; margin-top: 2px; padding: 9px;
+  border: 1px solid var(--accent); background: transparent; color: var(--accent);
+  font-family: var(--font); font-weight: 600; font-size: 12px;
+  cursor: pointer; transition: background 0.1s ease, color 0.1s ease;
+}
+#controls button:hover { background: var(--accent); color: var(--bg-base); }
+#controls button:focus-visible { outline: 1px solid var(--text-primary); outline-offset: 2px; }
+
+#passResults { margin-top: 14px; max-height: 280px; overflow-y: auto; }
+.pass { padding: 8px 0; border-top: 1px solid var(--border); cursor: pointer; }
+.pass:hover { background: rgba(255,255,255,0.03); }
+.pass strong { font-size: 12px; font-weight: 600; }
+.pass .meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+#satDetails {
+  top: 60px; right: 16px;
+  transform: translateX(120%);
+  transition: transform 0.2s ease;
+}
+#satDetails.open { transform: translateX(0); }
+#satDetails::before, #satDetails::after {
+  content: ''; position: absolute; width: 14px; height: 14px;
+  border: 2px solid var(--accent); pointer-events: none;
+}
+#satDetails::before { top: -2px; left: -2px; border-right: none; border-bottom: none; }
+#satDetails::after { bottom: -2px; right: -2px; border-left: none; border-top: none; }
+#closeDetails {
+  position: absolute; top: 10px; right: 12px; background: none; border: none;
+  color: var(--text-muted); font-family: var(--font); font-size: 15px; cursor: pointer;
+}
+#closeDetails:hover { color: var(--text-primary); }
+#satDetails h3 { margin: 2px 0 8px 0; font-size: 15px; font-weight: 700; }
+#satDetails p { font-size: 11px; color: var(--text-muted); line-height: 1.5; margin: 0 0 14px 0; }
+#satDetails .stat { display: flex; justify-content: space-between; font-size: 12px; padding: 5px 0; border-top: 1px solid var(--border); }
+#satDetails .stat .label { color: var(--text-muted); }
+
+#statsBar {
+  position: fixed; bottom: 0; left: 0; right: 0; height: 32px;
+  display: flex; align-items: center; justify-content: center; gap: 22px;
+  background: var(--bg-base); border-top: 1px solid var(--border); z-index: 10;
+}
+#statsBar .metric { font-size: 10px; color: var(--text-muted); display: flex; gap: 6px; }
+#statsBar .metric b { font-weight: 600; color: var(--accent); }
