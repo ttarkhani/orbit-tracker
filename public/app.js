@@ -1,4 +1,6 @@
-const API_BASE = "http://127.0.0.1:5000";
+// Local dev: static files on :8000, Flask on :5000. Deployed: everything on one origin.
+const IS_LOCAL = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+const API_BASE = IS_LOCAL ? "http://127.0.0.1:5000" : "";
 const EARTH_RADIUS_KM = 6371;
 const DEFAULT_VIEW_ALTITUDE = 2.5;
 

@@ -13,6 +13,7 @@ CelesTrak's public GP data API:
 import json
 import logging
 import os
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -20,6 +21,17 @@ import requests
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _default_cache_path() -> str:
+    """
+    Serverless hosts like Vercel mount the project read-only; only the temp
+    directory is writable (and it doesn't persist across cold starts).
+    Locally, the cache lives next to this file.
+    """
+    if os.environ.get("VERCEL"):
+        return os.path.join(tempfile.gettempdir(), "tle_cache.json")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "tle_cache.json")
 
 
 @dataclass
@@ -36,7 +48,7 @@ class TLERecord:
 class TLEManager:
     """Fetches and caches satellite TLE data from CelesTrak."""
 
-    CACHE_FILE = "tle_cache.json"
+    CACHE_FILE = _default_cache_path()
     CACHE_DURATION_HOURS = 24
     REQUEST_TIMEOUT_SECONDS = 15  # bulk group payload is larger than a single-satellite request
     GP_URL = "https://celestrak.org/NORAD/elements/gp.php"
@@ -237,5 +249,9 @@ class TLEManager:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "data": data,
         }
-        with open(cls.CACHE_FILE, "w") as f:
-            json.dump(cache, f, indent=2)
+        try:
+            with open(cls.CACHE_FILE, "w") as f:
+                json.dump(cache, f, indent=2)
+        except OSError as e:
+            # A read-only or full disk shouldn't take the whole app down.
+            logger.warning(f"Could not write TLE cache ({e}); continuing without it")
