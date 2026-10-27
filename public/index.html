@@ -13,6 +13,12 @@
 
   <div id="topBar">
     <div class="brand">Orbit Tracker</div>
+    <div id="search">
+      <input type="text" id="searchInput" role="combobox" aria-label="Search satellites"
+             aria-autocomplete="list" aria-controls="searchResults" aria-expanded="false"
+             autocomplete="off" spellcheck="false" placeholder="Search name or NORAD ID  /">
+      <div id="searchResults" role="listbox" aria-label="Matching satellites" hidden></div>
+    </div>
     <div class="clock" id="utcClock">—</div>
   </div>
 
@@ -20,6 +26,8 @@
     <h3>Location</h3>
     <label>Latitude <input type="number" id="lat" value="40.7128" step="0.0001"></label>
     <label>Longitude <input type="number" id="lon" value="-74.0060" step="0.0001"></label>
+    <button id="useLocation" class="secondary">Use my location</button>
+    <div id="locationStatus" aria-live="polite"></div>
     <button id="findPasses">Find upcoming passes</button>
     <div id="passResults"></div>
   </div>
@@ -43,7 +51,7 @@
     <span class="metric">requests <b id="statRequests">—</b></span>
   </div>
 
-  <script src="https://unpkg.com/globe.gl"></script>
+  <script src="https://unpkg.com/globe.gl@2.46.2"></script>
   <script src="app.js"></script>
 </body>
 </html>

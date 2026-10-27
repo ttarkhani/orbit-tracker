@@ -3,6 +3,12 @@ const IS_LOCAL = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 const API_BASE = IS_LOCAL ? "http://127.0.0.1:5000" : "";
 const EARTH_RADIUS_KM = 6371;
 const DEFAULT_VIEW_ALTITUDE = 2.5;
+const SAT_COLOR = "#FFB454";
+const SELECTED_SAT_COLOR = "#E8EAED";
+const LOCATION_STORAGE_KEY = "orbitTracker.location";
+// Fly-to camera latitude for geostationary satellites. Centering on their ~0° latitude
+// puts the camera in the ring's plane, so the ring would read as a flat line.
+const GEO_FLYTO_LAT = 28;
 
 const SATELLITE_INFO = {
   ISS: "The International Space Station — continuously crewed since November 2000, the largest human-made structure in orbit.",
@@ -13,6 +19,11 @@ const SATELLITE_INFO = {
 };
 
 let latestSatellitePositions = [];
+let selectedSatelliteName = null;
+
+// Color and size apply per particle set (one THREE.Points each), so the selected
+// satellite is rendered as its own one-element set.
+const isSelectedSet = set => set.some(s => s.name === selectedSatelliteName);
 
 const world = new Globe(document.getElementById("globeViz"))
   .globeImageUrl("https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-blue-marble.jpg")
@@ -20,8 +31,8 @@ const world = new Globe(document.getElementById("globeViz"))
   .particleLat(d => d.latitude)
   .particleLng(d => d.longitude)
   .particleAltitude(d => d.altitude_km / EARTH_RADIUS_KM)
-  .particlesColor(() => "#FFB454")
-  .particlesSize(3)
+  .particlesColor(set => isSelectedSet(set) ? SELECTED_SAT_COLOR : SAT_COLOR)
+  .particlesSize(set => isSelectedSet(set) ? 6 : 3)
   .particlesSizeAttenuation(false)
   .lineHoverPrecision(5)
   .onParticleClick(showSatelliteDetails)
@@ -51,10 +62,16 @@ async function updatePositions() {
     const res = await fetch(`${API_BASE}/api/satellites`);
     const data = await res.json();
     latestSatellitePositions = data.satellites;
-    world.particlesData([data.satellites]);
+    renderParticles();
   } catch (err) {
     console.error("Failed to fetch satellite positions:", err);
   }
+}
+
+function renderParticles() {
+  const selected = latestSatellitePositions.filter(s => s.name === selectedSatelliteName);
+  const others = latestSatellitePositions.filter(s => s.name !== selectedSatelliteName);
+  world.particlesData(selected.length ? [others, selected] : [others]);
 }
 
 updatePositions();
@@ -81,16 +98,24 @@ setInterval(updateStats, 5000);
 
 // --- Satellite details panel + orbit path ---
 
-function frameOrbitPath(maxAltitudeKm) {
+// Pass `focus` ({lat, lng}) to also rotate the globe so that point faces the camera.
+function frameOrbitPath(maxAltitudeKm, focus) {
   const ringRadius = 1 + maxAltitudeKm / EARTH_RADIUS_KM;
   const camera = world.camera();
   const halfFovRad = (camera.fov / 2) * (Math.PI / 180);
   const requiredDistance = (ringRadius / Math.tan(halfFovRad)) * 1.2;
   const framingAltitude = Math.max(DEFAULT_VIEW_ALTITUDE, requiredDistance);
-  world.pointOfView({ altitude: framingAltitude }, 800);
+  const view = focus
+    ? { lat: focus.lat, lng: focus.lng, altitude: framingAltitude }
+    : { altitude: framingAltitude };
+  world.pointOfView(view, 800);
 }
 
-async function showSatelliteDetails(sat) {
+// flyTo is set for selections from search or the pass list, not direct dot clicks.
+async function showSatelliteDetails(sat, { flyTo = false } = {}) {
+  selectedSatelliteName = sat.name;
+  renderParticles();
+
   document.getElementById("detailsName").textContent = sat.name;
   const baseBlurb = SATELLITE_INFO[sat.name] || "Live-tracked object from CelesTrak's catalog of bright, easily observed satellites.";
   document.getElementById("detailsNorad").textContent = sat.norad_id ?? "—";
@@ -103,10 +128,13 @@ async function showSatelliteDetails(sat) {
   try {
     const res = await fetch(`${API_BASE}/api/orbit-path?name=${encodeURIComponent(sat.name)}`);
     const data = await res.json();
+    // Another satellite was selected, or the panel closed, while this request was in flight.
+    if (selectedSatelliteName !== sat.name) return;
 
     world.pathsData([{ name: sat.name, points: data.points }]);
     const maxAlt = Math.max(...data.points.map(p => p.alt));
-    frameOrbitPath(maxAlt);
+    const focusLat = data.is_geostationary ? GEO_FLYTO_LAT : sat.latitude;
+    frameOrbitPath(maxAlt, flyTo ? { lat: focusLat, lng: sat.longitude } : null);
 
     document.getElementById("detailsBlurb").textContent = data.is_geostationary
       ? baseBlurb + " Geostationary — this ring shows its true motion through space; its ground track alone would stay fixed over one spot, since that motion exactly matches Earth's rotation."
@@ -117,17 +145,22 @@ async function showSatelliteDetails(sat) {
   }
 }
 
-document.getElementById("closeDetails").addEventListener("click", () => {
+function closeDetails() {
   document.getElementById("satDetails").classList.remove("open");
+  selectedSatelliteName = null;
+  renderParticles();
   world.pathsData([]);
   world.pointOfView({ altitude: DEFAULT_VIEW_ALTITUDE }, 800);
-});
+}
+
+document.getElementById("closeDetails").addEventListener("click", closeDetails);
 
 // --- Pass prediction UI ---
 
 async function fetchPasses() {
   const lat = parseFloat(document.getElementById("lat").value);
   const lon = parseFloat(document.getElementById("lon").value);
+  saveLocation(lat, lon);
   const resultsEl = document.getElementById("passResults");
   resultsEl.innerHTML = "Loading…";
 
@@ -153,11 +186,188 @@ async function fetchPasses() {
 }
 
 document.getElementById("findPasses").addEventListener("click", fetchPasses);
+restoreLocation();
 fetchPasses();
 
 document.getElementById("passResults").addEventListener("click", (e) => {
   const passEl = e.target.closest(".pass");
   if (!passEl) return;
   const sat = latestSatellitePositions.find(s => s.name === passEl.dataset.satellite);
-  if (sat) showSatelliteDetails(sat);
+  if (sat) showSatelliteDetails(sat, { flyTo: true });
+});
+
+// --- Location: geolocation + remembered coordinates ---
+
+function isValidLocation(lat, lon) {
+  return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+}
+
+function saveLocation(lat, lon) {
+  if (!isValidLocation(lat, lon)) return;
+  try {
+    localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify({ lat, lon }));
+  } catch (err) {
+    // Storage unavailable (private mode, blocked cookies); not remembering is fine.
+  }
+}
+
+function restoreLocation() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LOCATION_STORAGE_KEY));
+    if (saved && isValidLocation(saved.lat, saved.lon)) {
+      document.getElementById("lat").value = saved.lat;
+      document.getElementById("lon").value = saved.lon;
+    }
+  } catch (err) {
+    // Missing, malformed, or unavailable storage: keep the default coordinates.
+  }
+}
+
+const GEOLOCATION_ERRORS = {
+  1: "Location permission denied. Enter coordinates manually.",
+  2: "Location unavailable. Enter coordinates manually.",
+  3: "Location request timed out. Try again.",
+};
+
+document.getElementById("useLocation").addEventListener("click", () => {
+  const statusEl = document.getElementById("locationStatus");
+  if (!navigator.geolocation) {
+    statusEl.textContent = "Geolocation is not supported in this browser.";
+    return;
+  }
+  statusEl.textContent = "Requesting location…";
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      document.getElementById("lat").value = pos.coords.latitude.toFixed(4);
+      document.getElementById("lon").value = pos.coords.longitude.toFixed(4);
+      statusEl.textContent = "";
+      fetchPasses();
+    },
+    (err) => {
+      statusEl.textContent = GEOLOCATION_ERRORS[err.code] || "Could not get location.";
+    },
+    { timeout: 10000, maximumAge: 300000 }
+  );
+});
+
+// --- Satellite search ---
+
+const searchInput = document.getElementById("searchInput");
+const searchResults = document.getElementById("searchResults");
+let searchMatches = [];
+let activeIndex = -1;
+
+function setSearchOpen(open) {
+  searchResults.hidden = !open;
+  searchInput.setAttribute("aria-expanded", String(open));
+  if (!open) {
+    activeIndex = -1;
+    searchInput.removeAttribute("aria-activedescendant");
+  }
+}
+
+function renderSearchResults() {
+  const query = searchInput.value.trim().toLowerCase();
+  if (!query) {
+    searchMatches = [];
+    setSearchOpen(false);
+    return;
+  }
+  searchMatches = latestSatellitePositions.filter(s =>
+    s.name.toLowerCase().includes(query) || String(s.norad_id ?? "").includes(query)
+  );
+  activeIndex = searchMatches.length ? 0 : -1;
+
+  searchResults.replaceChildren(...(searchMatches.length
+    ? searchMatches.map((sat, i) => {
+        const option = document.createElement("div");
+        option.className = "search-option";
+        option.id = `search-option-${i}`;
+        option.setAttribute("role", "option");
+        option.dataset.index = i;
+        const name = document.createElement("span");
+        name.textContent = sat.name;
+        const norad = document.createElement("span");
+        norad.className = "norad";
+        norad.textContent = sat.norad_id ?? "";
+        option.append(name, norad);
+        return option;
+      })
+    : [Object.assign(document.createElement("div"), { className: "search-empty", textContent: "No matching satellites" })]
+  ));
+  setSearchOpen(true);
+  updateActiveOption();
+}
+
+function updateActiveOption() {
+  searchResults.querySelectorAll(".search-option").forEach((el, i) => {
+    el.setAttribute("aria-selected", String(i === activeIndex));
+  });
+  if (activeIndex < 0) {
+    searchInput.removeAttribute("aria-activedescendant");
+    return;
+  }
+  const activeEl = document.getElementById(`search-option-${activeIndex}`);
+  searchInput.setAttribute("aria-activedescendant", activeEl.id);
+  activeEl.scrollIntoView({ block: "nearest" });
+}
+
+function clearSearch() {
+  searchInput.value = "";
+  searchMatches = [];
+  setSearchOpen(false);
+}
+
+function selectSearchResult(index) {
+  const match = searchMatches[index];
+  if (!match) return;
+  // Use the freshest position in case the list was built before the last refresh.
+  const sat = latestSatellitePositions.find(s => s.name === match.name) || match;
+  clearSearch();
+  searchInput.blur();
+  showSatelliteDetails(sat, { flyTo: true });
+}
+
+searchInput.addEventListener("input", renderSearchResults);
+
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if (!searchMatches.length) return;
+    e.preventDefault();
+    const step = e.key === "ArrowDown" ? 1 : -1;
+    activeIndex = (activeIndex + step + searchMatches.length) % searchMatches.length;
+    updateActiveOption();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    selectSearchResult(activeIndex);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    clearSearch();
+  }
+});
+
+searchInput.addEventListener("blur", () => setSearchOpen(false));
+searchInput.addEventListener("focus", renderSearchResults);
+
+// Keep focus in the input while clicking an option, so blur doesn't close the list first.
+searchResults.addEventListener("mousedown", (e) => e.preventDefault());
+searchResults.addEventListener("click", (e) => {
+  const option = e.target.closest(".search-option");
+  if (option) selectSearchResult(Number(option.dataset.index));
+});
+
+// --- Keyboard shortcuts ---
+
+function isTypingTarget(el) {
+  return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "/" && !isTypingTarget(document.activeElement) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    searchInput.focus();
+  } else if (e.key === "Escape" && document.activeElement !== searchInput
+             && document.getElementById("satDetails").classList.contains("open")) {
+    closeDetails();
+  }
 });
