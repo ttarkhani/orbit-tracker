@@ -2,7 +2,20 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Orbit Tracker</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Orbit Tracker: live satellite positions and pass prediction</title>
+  <meta name="description" content="Live positions of 30 satellites on a 3D globe, with orbit paths and visible pass prediction for any location. Computed from CelesTrak TLEs with SGP4.">
+  <meta name="theme-color" content="#0A0E14">
+  <link rel="icon" href="favicon.png" sizes="32x32" type="image/png">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Orbit Tracker: live satellite positions and pass prediction">
+  <meta property="og:description" content="Live positions of 30 satellites on a 3D globe, with orbit paths and visible pass prediction for any location.">
+  <meta property="og:url" content="https://orbit-tracker-coral.vercel.app">
+  <meta property="og:image" content="https://orbit-tracker-coral.vercel.app/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -19,6 +32,7 @@
              autocomplete="off" spellcheck="false" placeholder="Search name or NORAD ID  /">
       <div id="searchResults" role="listbox" aria-label="Matching satellites" hidden></div>
     </div>
+    <button id="passesToggle" aria-controls="controls" aria-expanded="false">Passes</button>
     <div class="clock" id="utcClock">—</div>
   </div>
 

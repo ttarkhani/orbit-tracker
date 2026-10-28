@@ -9,6 +9,13 @@ const LOCATION_STORAGE_KEY = "orbitTracker.location";
 // Fly-to camera latitude for geostationary satellites. Centering on their ~0° latitude
 // puts the camera in the ring's plane, so the ring would read as a flat line.
 const GEO_FLYTO_LAT = 28;
+const CAMERA_MOVE_MS = 800;
+// Gap kept between a framed orbit ring and the nearest panel or bar edge.
+const FRAME_MARGIN_PX = 16;
+
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const mobileLayout = window.matchMedia("(max-width: 768px)");
+const motionMs = ms => reducedMotion.matches ? 0 : ms;
 
 const SATELLITE_INFO = {
   ISS: "The International Space Station — continuously crewed since November 2000, the largest human-made structure in orbit.",
@@ -48,6 +55,7 @@ setTimeout(() => world.pointOfView({ altitude: DEFAULT_VIEW_ALTITUDE }));
 
 window.addEventListener("resize", () => {
   world.width(window.innerWidth).height(window.innerHeight);
+  if (selectedSatelliteName) animateGlobeOffset(unobstructedCenterOffset(), 0);
 });
 
 function updateClock() {
@@ -98,23 +106,83 @@ setInterval(updateStats, 5000);
 
 // --- Satellite details panel + orbit path ---
 
-// Pass `focus` ({lat, lng}) to also rotate the globe so that point faces the camera.
+const controlsPanel = document.getElementById("controls");
+const detailsPanel = document.getElementById("satDetails");
+
+function isPanelShown(panel) {
+  if (panel === controlsPanel && !mobileLayout.matches) return true;
+  return panel.classList.contains("open");
+}
+
+// Viewport area not covered by the top bar, stats bar, or any open panel. Uses offset*
+// (layout position) so a panel mid-slide is measured where it will end up.
+function unobstructedRect() {
+  const w = window.innerWidth;
+  const rect = {
+    left: 0,
+    top: document.getElementById("topBar").offsetHeight,
+    right: w,
+    bottom: window.innerHeight - document.getElementById("statsBar").offsetHeight,
+  };
+  for (const panel of [controlsPanel, detailsPanel]) {
+    if (!isPanelShown(panel)) continue;
+    const left = panel.offsetLeft;
+    const right = left + panel.offsetWidth;
+    if (panel.offsetWidth > w * 0.6) rect.bottom = Math.min(rect.bottom, panel.offsetTop);  // bottom sheet
+    else if ((left + right) / 2 < w / 2) rect.left = Math.max(rect.left, right);
+    else rect.right = Math.min(rect.right, left);
+  }
+  return rect;
+}
+
+function unobstructedCenterOffset() {
+  const r = unobstructedRect();
+  return [(r.left + r.right - window.innerWidth) / 2, (r.top + r.bottom - window.innerHeight) / 2];
+}
+
+// globeOffset shifts the rendered globe in screen px; ease it alongside pointOfView's tween.
+let globeOffset = [0, 0];
+let globeOffsetFrame = null;
+
+function animateGlobeOffset(target, ms) {
+  cancelAnimationFrame(globeOffsetFrame);
+  const from = globeOffset.slice();
+  const start = performance.now();
+  const step = (now) => {
+    const t = ms ? Math.min(1, (now - start) / ms) : 1;
+    const eased = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;  // cubic in-out
+    globeOffset = from.map((v, i) => v + (target[i] - v) * eased);
+    world.globeOffset(globeOffset);
+    if (t < 1) globeOffsetFrame = requestAnimationFrame(step);
+  };
+  step(start);
+}
+
+// Centers the globe in the unobstructed area and picks the altitude at which the whole ring
+// fits inside it. Pass `focus` ({lat, lng}) to also rotate the globe so that point faces the camera.
 function frameOrbitPath(maxAltitudeKm, focus) {
   const ringRadius = 1 + maxAltitudeKm / EARTH_RADIUS_KM;
-  const camera = world.camera();
-  const halfFovRad = (camera.fov / 2) * (Math.PI / 180);
-  const requiredDistance = (ringRadius / Math.tan(halfFovRad)) * 1.2;
-  const framingAltitude = Math.max(DEFAULT_VIEW_ALTITUDE, requiredDistance);
+  const free = unobstructedRect();
+  const halfFitPx = Math.max(40, Math.min(free.right - free.left, free.bottom - free.top) / 2 - FRAME_MARGIN_PX);
+  // The view offset only shifts the image, so the vertical FOV still sets px per unit of tan(angle).
+  const halfFovRad = (world.camera().fov / 2) * (Math.PI / 180);
+  const tanFit = halfFitPx * Math.tan(halfFovRad) / (window.innerHeight / 2);
+  // The ring lies inside a sphere of radius ringRadius, which spans asin(ringRadius / distance)
+  // from the view axis; solve for the distance where that angle's tan equals tanFit.
+  const distance = ringRadius * Math.sqrt(1 + tanFit * tanFit) / tanFit;
+  const framingAltitude = Math.max(DEFAULT_VIEW_ALTITUDE, distance - 1);
   const view = focus
     ? { lat: focus.lat, lng: focus.lng, altitude: framingAltitude }
     : { altitude: framingAltitude };
-  world.pointOfView(view, 800);
+  animateGlobeOffset(unobstructedCenterOffset(), motionMs(CAMERA_MOVE_MS));
+  world.pointOfView(view, motionMs(CAMERA_MOVE_MS));
 }
 
 // flyTo is set for selections from search or the pass list, not direct dot clicks.
 async function showSatelliteDetails(sat, { flyTo = false } = {}) {
   selectedSatelliteName = sat.name;
   renderParticles();
+  if (mobileLayout.matches) closePasses();
 
   document.getElementById("detailsName").textContent = sat.name;
   const baseBlurb = SATELLITE_INFO[sat.name] || "Live-tracked object from CelesTrak's catalog of bright, easily observed satellites.";
@@ -131,14 +199,15 @@ async function showSatelliteDetails(sat, { flyTo = false } = {}) {
     // Another satellite was selected, or the panel closed, while this request was in flight.
     if (selectedSatelliteName !== sat.name) return;
 
+    // Set the blurb before framing: on mobile its length changes the bottom sheet's height.
+    document.getElementById("detailsBlurb").textContent = data.is_geostationary
+      ? baseBlurb + " Geostationary — this ring shows its true motion through space; its ground track alone would stay fixed over one spot, since that motion exactly matches Earth's rotation."
+      : baseBlurb;
+
     world.pathsData([{ name: sat.name, points: data.points }]);
     const maxAlt = Math.max(...data.points.map(p => p.alt));
     const focusLat = data.is_geostationary ? GEO_FLYTO_LAT : sat.latitude;
     frameOrbitPath(maxAlt, flyTo ? { lat: focusLat, lng: sat.longitude } : null);
-
-    document.getElementById("detailsBlurb").textContent = data.is_geostationary
-      ? baseBlurb + " Geostationary — this ring shows its true motion through space; its ground track alone would stay fixed over one spot, since that motion exactly matches Earth's rotation."
-      : baseBlurb;
   } catch (err) {
     console.error("Failed to load orbit path:", err);
     document.getElementById("detailsBlurb").textContent = baseBlurb;
@@ -150,10 +219,33 @@ function closeDetails() {
   selectedSatelliteName = null;
   renderParticles();
   world.pathsData([]);
-  world.pointOfView({ altitude: DEFAULT_VIEW_ALTITUDE }, 800);
+  animateGlobeOffset([0, 0], motionMs(CAMERA_MOVE_MS));
+  world.pointOfView({ altitude: DEFAULT_VIEW_ALTITUDE }, motionMs(CAMERA_MOVE_MS));
 }
 
 document.getElementById("closeDetails").addEventListener("click", closeDetails);
+
+// --- Mobile: passes sheet toggle (only one sheet open at a time) ---
+
+const passesToggle = document.getElementById("passesToggle");
+
+function setPassesOpen(open) {
+  controlsPanel.classList.toggle("open", open);
+  passesToggle.setAttribute("aria-expanded", String(open));
+}
+
+function closePasses() {
+  setPassesOpen(false);
+}
+
+passesToggle.addEventListener("click", () => {
+  const open = !controlsPanel.classList.contains("open");
+  if (open && detailsPanel.classList.contains("open")) closeDetails();
+  setPassesOpen(open);
+});
+
+// The desktop layout always shows the panel, so the sheet state resets on a layout switch.
+mobileLayout.addEventListener("change", closePasses);
 
 // --- Pass prediction UI ---
 
@@ -366,8 +458,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "/" && !isTypingTarget(document.activeElement) && !e.ctrlKey && !e.metaKey && !e.altKey) {
     e.preventDefault();
     searchInput.focus();
-  } else if (e.key === "Escape" && document.activeElement !== searchInput
-             && document.getElementById("satDetails").classList.contains("open")) {
-    closeDetails();
+  } else if (e.key === "Escape" && document.activeElement !== searchInput) {
+    if (detailsPanel.classList.contains("open")) closeDetails();
+    else if (mobileLayout.matches && controlsPanel.classList.contains("open")) closePasses();
   }
 });
