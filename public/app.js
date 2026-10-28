@@ -2,7 +2,10 @@
 const IS_LOCAL = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 const API_BASE = IS_LOCAL ? "http://127.0.0.1:5000" : "";
 const EARTH_RADIUS_KM = 6371;
+// Closest default view; narrow screens pull back further so the whole globe fits.
 const DEFAULT_VIEW_ALTITUDE = 2.5;
+// Height above the surface kept in view by the default framing, for low-orbit satellites.
+const GLOBE_FRAME_MARGIN_KM = 1000;
 const SAT_COLOR = "#FFB454";
 const SELECTED_SAT_COLOR = "#E8EAED";
 const LOCATION_STORAGE_KEY = "orbitTracker.location";
@@ -15,6 +18,8 @@ const FRAME_MARGIN_PX = 16;
 
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 const mobileLayout = window.matchMedia("(max-width: 768px)");
+// Wide screens keep the default (nothing selected) globe horizontally centered in the viewport.
+const wideLayout = window.matchMedia("(min-width: 1101px)");
 const motionMs = ms => reducedMotion.matches ? 0 : ms;
 
 const SATELLITE_INFO = {
@@ -42,7 +47,10 @@ const world = new Globe(document.getElementById("globeViz"))
   .particlesSize(set => isSelectedSet(set) ? 6 : 3)
   .particlesSizeAttenuation(false)
   .lineHoverPrecision(5)
-  .onParticleClick(showSatelliteDetails)
+  // Touch taps are hit-tested by our own handler below; skipping them here avoids a double select.
+  .onParticleClick((sat, event) => {
+    if (event?.pointerType !== "touch") showSatelliteDetails(sat);
+  })
   .pathPoints('points')
   .pathPointLat('lat')
   .pathPointLng('lng')
@@ -51,11 +59,16 @@ const world = new Globe(document.getElementById("globeViz"))
   .pathStroke(0.4)
   .pathsData([]);
 
-setTimeout(() => world.pointOfView({ altitude: DEFAULT_VIEW_ALTITUDE }));
+setTimeout(() => showDefaultView(0));
 
+let resizeTimer = null;
 window.addEventListener("resize", () => {
   world.width(window.innerWidth).height(window.innerHeight);
   if (selectedSatelliteName) animateGlobeOffset(unobstructedCenterOffset(), 0);
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (!selectedSatelliteName) showDefaultView(0, { keepZoomIfFits: true });
+  }, 150);
 });
 
 function updateClock() {
@@ -158,19 +171,52 @@ function animateGlobeOffset(target, ms) {
   step(start);
 }
 
+// Camera altitude at which a sphere of `radius` (globe radii) around the globe's center fits
+// inside the unobstructed area, once the globe is centered there. Pass `centerX` when the globe
+// sits at a fixed horizontal position instead of the area's center.
+function fitAltitude(radius, centerX) {
+  const free = unobstructedRect();
+  const halfWidth = centerX === undefined
+    ? (free.right - free.left) / 2
+    : Math.min(centerX - free.left, free.right - centerX);
+  const halfFitPx = Math.max(40, Math.min(halfWidth, (free.bottom - free.top) / 2) - FRAME_MARGIN_PX);
+  // The view offset only shifts the image, so the vertical FOV still sets px per unit of tan(angle).
+  const halfFovRad = (world.camera().fov / 2) * (Math.PI / 180);
+  const tanFit = halfFitPx * Math.tan(halfFovRad) / (window.innerHeight / 2);
+  // The sphere spans asin(radius / distance) from the view axis; solve for the distance
+  // where that angle's tan equals tanFit.
+  const distance = radius * Math.sqrt(1 + tanFit * tanFit) / tanFit;
+  return distance - 1;
+}
+
+function defaultViewAltitude() {
+  const centerX = wideLayout.matches ? window.innerWidth / 2 : undefined;
+  return Math.max(DEFAULT_VIEW_ALTITUDE, fitAltitude(1 + GLOBE_FRAME_MARGIN_KM / EARTH_RADIUS_KM, centerX));
+}
+
+function defaultViewOffset() {
+  const [dx, dy] = unobstructedCenterOffset();
+  return wideLayout.matches ? [0, dy] : [dx, dy];
+}
+
+let appliedDefaultAltitude = null;
+
+// Fits the whole globe in the unobstructed area. With keepZoomIfFits (used on resize), the
+// altitude is left alone when the fit barely changed, e.g. a mobile address bar showing or hiding,
+// so the user's own zoom isn't reset.
+function showDefaultView(ms, { keepZoomIfFits = false } = {}) {
+  const altitude = defaultViewAltitude();
+  animateGlobeOffset(defaultViewOffset(), ms);
+  if (keepZoomIfFits && appliedDefaultAltitude !== null && Math.abs(altitude - appliedDefaultAltitude) < 0.05) return;
+  appliedDefaultAltitude = altitude;
+  world.pointOfView({ altitude }, ms);
+}
+
 // Centers the globe in the unobstructed area and picks the altitude at which the whole ring
 // fits inside it. Pass `focus` ({lat, lng}) to also rotate the globe so that point faces the camera.
 function frameOrbitPath(maxAltitudeKm, focus) {
   const ringRadius = 1 + maxAltitudeKm / EARTH_RADIUS_KM;
-  const free = unobstructedRect();
-  const halfFitPx = Math.max(40, Math.min(free.right - free.left, free.bottom - free.top) / 2 - FRAME_MARGIN_PX);
-  // The view offset only shifts the image, so the vertical FOV still sets px per unit of tan(angle).
-  const halfFovRad = (world.camera().fov / 2) * (Math.PI / 180);
-  const tanFit = halfFitPx * Math.tan(halfFovRad) / (window.innerHeight / 2);
-  // The ring lies inside a sphere of radius ringRadius, which spans asin(ringRadius / distance)
-  // from the view axis; solve for the distance where that angle's tan equals tanFit.
-  const distance = ringRadius * Math.sqrt(1 + tanFit * tanFit) / tanFit;
-  const framingAltitude = Math.max(DEFAULT_VIEW_ALTITUDE, distance - 1);
+  const framingAltitude = Math.max(defaultViewAltitude(), fitAltitude(ringRadius));
   const view = focus
     ? { lat: focus.lat, lng: focus.lng, altitude: framingAltitude }
     : { altitude: framingAltitude };
@@ -180,9 +226,12 @@ function frameOrbitPath(maxAltitudeKm, focus) {
 
 // flyTo is set for selections from search or the pass list, not direct dot clicks.
 async function showSatelliteDetails(sat, { flyTo = false } = {}) {
+  // Re-selecting the open satellite (e.g. a second tap) shouldn't refetch or reframe.
+  if (!flyTo && sat.name === selectedSatelliteName && detailsPanel.classList.contains("open")) return;
   selectedSatelliteName = sat.name;
   renderParticles();
-  if (mobileLayout.matches) closePasses();
+  // Close without resetting the view: the orbit framing below takes over.
+  if (mobileLayout.matches) setPassesOpen(false);
 
   document.getElementById("detailsName").textContent = sat.name;
   const baseBlurb = SATELLITE_INFO[sat.name] || "Live-tracked object from CelesTrak's catalog of bright, easily observed satellites.";
@@ -219,11 +268,83 @@ function closeDetails() {
   selectedSatelliteName = null;
   renderParticles();
   world.pathsData([]);
-  animateGlobeOffset([0, 0], motionMs(CAMERA_MOVE_MS));
-  world.pointOfView({ altitude: DEFAULT_VIEW_ALTITUDE }, motionMs(CAMERA_MOVE_MS));
+  showDefaultView(motionMs(CAMERA_MOVE_MS));
 }
 
 document.getElementById("closeDetails").addEventListener("click", closeDetails);
+
+// --- Touch: tap hit-testing for satellite dots ---
+// globe.gl resolves clicks from a periodic hover raycast, so a quick tap can miss a dot.
+// For touch input, pick the nearest visible satellite to the tap point instead.
+
+const TAP_RADIUS_PX = 22;
+const TAP_MAX_MOVE_PX = 10;
+const TAP_MAX_MS = 500;
+
+// getScreenCoords projects satellites behind the globe too, so check the line of sight:
+// a satellite is hidden if the segment from the camera to it passes through the globe.
+function isBehindGlobe(sat) {
+  const p = world.getCoords(sat.latitude, sat.longitude, sat.altitude_km / EARTH_RADIUS_KM);
+  const c = world.camera().position;
+  const r = world.getGlobeRadius();
+  const d = { x: p.x - c.x, y: p.y - c.y, z: p.z - c.z };
+  const a = d.x * d.x + d.y * d.y + d.z * d.z;
+  const b = 2 * (c.x * d.x + c.y * d.y + c.z * d.z);
+  const k = c.x * c.x + c.y * c.y + c.z * c.z - r * r;
+  const disc = b * b - 4 * a * k;
+  if (disc < 0) return false;
+  const t = (-b - Math.sqrt(disc)) / (2 * a);  // first sphere hit along camera -> satellite
+  return t > 0 && t < 1;
+}
+
+function satelliteNearTap(x, y) {
+  let nearest = null;
+  let nearestDist = TAP_RADIUS_PX;
+  for (const sat of latestSatellitePositions) {
+    const s = world.getScreenCoords(sat.latitude, sat.longitude, sat.altitude_km / EARTH_RADIUS_KM);
+    const dist = Math.hypot(s.x - x, s.y - y);
+    if (dist <= nearestDist && !isBehindGlobe(sat)) {
+      nearest = sat;
+      nearestDist = dist;
+    }
+  }
+  return nearest;
+}
+
+const globeEl = document.getElementById("globeViz");
+const activeTouches = new Set();
+// The single-finger touch that may become a tap; cleared by movement or a second finger.
+let tapCandidate = null;
+
+globeEl.addEventListener("pointerdown", (e) => {
+  if (e.pointerType !== "touch") return;
+  activeTouches.add(e.pointerId);
+  tapCandidate = activeTouches.size === 1
+    ? { id: e.pointerId, x: e.clientX, y: e.clientY, time: e.timeStamp }
+    : null;
+});
+
+globeEl.addEventListener("pointermove", (e) => {
+  if (!tapCandidate || e.pointerId !== tapCandidate.id) return;
+  if (Math.hypot(e.clientX - tapCandidate.x, e.clientY - tapCandidate.y) > TAP_MAX_MOVE_PX) tapCandidate = null;
+});
+
+globeEl.addEventListener("pointerup", (e) => {
+  if (e.pointerType !== "touch") return;
+  activeTouches.delete(e.pointerId);
+  const tap = tapCandidate;
+  tapCandidate = null;
+  if (!tap || tap.id !== e.pointerId || e.timeStamp - tap.time > TAP_MAX_MS) return;
+  if (Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > TAP_MAX_MOVE_PX) return;
+  const rect = globeEl.getBoundingClientRect();
+  const sat = satelliteNearTap(e.clientX - rect.left, e.clientY - rect.top);
+  if (sat) showSatelliteDetails(sat);
+});
+
+globeEl.addEventListener("pointercancel", (e) => {
+  activeTouches.delete(e.pointerId);
+  tapCandidate = null;
+});
 
 // --- Mobile: passes sheet toggle (only one sheet open at a time) ---
 
@@ -236,16 +357,19 @@ function setPassesOpen(open) {
 
 function closePasses() {
   setPassesOpen(false);
+  showDefaultView(motionMs(CAMERA_MOVE_MS));
 }
 
 passesToggle.addEventListener("click", () => {
   const open = !controlsPanel.classList.contains("open");
-  if (open && detailsPanel.classList.contains("open")) closeDetails();
-  setPassesOpen(open);
+  if (!open) return closePasses();
+  if (detailsPanel.classList.contains("open")) closeDetails();
+  setPassesOpen(true);
 });
 
-// The desktop layout always shows the panel, so the sheet state resets on a layout switch.
-mobileLayout.addEventListener("change", closePasses);
+// The desktop layout always shows the panel, so the sheet state resets on a layout switch;
+// the resize handler refits the view.
+mobileLayout.addEventListener("change", () => setPassesOpen(false));
 
 // --- Pass prediction UI ---
 
